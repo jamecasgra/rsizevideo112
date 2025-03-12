@@ -120,7 +120,8 @@ const sendEmailNotification = async (email, videoData) => {
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#4b5563" stroke-width="2">
                 <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
               </svg>
-              <span style="margin-left: 8px; color: #4b5563; font-weight: bold;">Important</span>
+              <span style="margin-left: 8px; color: #4b5563; font-weight: bol
+d;">Important</span>
             </div>
             <p style="margin: 0; color: #4b5563; font-size: 14px; text-align: center;">
               Your video will be available for the next 24 hours
