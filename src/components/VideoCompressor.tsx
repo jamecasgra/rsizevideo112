@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileVideo, AlertCircle, Share2, RefreshCw, Download, Clock, Mail, Check } from 'lucide-react';
+import { Upload, FileVideo, AlertCircle, Share2, RefreshCw, Download, Clock, Mail } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 
@@ -57,6 +57,11 @@ const VideoCompressor = () => {
   const [showEmailInput, setShowEmailInput] = useState(false);
   const [email, setEmail] = useState('');
   const [originalSize, setOriginalSize] = useState<number>(0);
+  const uploadStartTimeRef = useRef<number>(0);
+  const totalBytesRef = useRef<number>(0);
+  const uploadedBytesRef = useRef<number>(0);
+  const lastProgressUpdateRef = useRef<number>(0);
+  const progressIntervalRef = useRef<number>(0);
 
   useEffect(() => {
     const loadStoredVideos = async () => {
@@ -94,7 +99,10 @@ const VideoCompressor = () => {
           const validVideos = updatedVideos
             .filter(video => {
               const expiresAt = new Date(video.expiresAt).getTime();
-              return expiresAt > now;
+              if (expiresAt <= now) {
+                video.status = 'expired';
+              }
+              return true;
             })
             .sort((a, b) => b.storedAt - a.storedAt)
             .slice(0, MAX_HISTORY_ITEMS);
@@ -127,6 +135,7 @@ const VideoCompressor = () => {
       const fileSizeMB = selectedFile.size / (1024 * 1024);
       setOriginalSize(fileSizeMB);
       setTargetSize(Math.floor(fileSizeMB * 0.5));
+      totalBytesRef.current = selectedFile.size;
     }
   };
 
@@ -144,6 +153,41 @@ const VideoCompressor = () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedVideos));
     
     return storedVideo;
+  };
+
+  const calculateUploadProgress = (loaded: number, total: number): number => {
+    const currentTime = Date.now();
+    const elapsedTime = currentTime - uploadStartTimeRef.current;
+    
+    // Calculate the time since the last progress update
+    const timeSinceLastUpdate = currentTime - lastProgressUpdateRef.current;
+    
+    // Update progress more gradually
+    if (timeSinceLastUpdate >= progressIntervalRef.current) {
+      // Calculate actual progress
+      const actualProgress = (loaded / total) * 100;
+      
+      // Get the current progress
+      const currentProgress = uploadProgress;
+      
+      // Calculate the increment (max 2% per update)
+      const maxIncrement = 2;
+      const increment = Math.min(
+        maxIncrement,
+        Math.max(0, actualProgress - currentProgress)
+      );
+      
+      // Calculate new progress
+      const newProgress = Math.min(99.9, currentProgress + increment);
+      
+      // Update references
+      lastProgressUpdateRef.current = currentTime;
+      progressIntervalRef.current = Math.max(100, (total - loaded) / 1024); // Adjust interval based on remaining bytes
+      
+      return Number(newProgress.toFixed(2));
+    }
+    
+    return uploadProgress;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -166,6 +210,11 @@ const VideoCompressor = () => {
     setError(null);
     setIsUploading(true);
     setUploadProgress(0);
+    uploadStartTimeRef.current = Date.now();
+    lastProgressUpdateRef.current = Date.now();
+    progressIntervalRef.current = 100;
+    totalBytesRef.current = file.size;
+    uploadedBytesRef.current = 0;
 
     const formData = new FormData();
     formData.append('video', file);
@@ -173,26 +222,14 @@ const VideoCompressor = () => {
 
     try {
       const xhr = new XMLHttpRequest();
-      let lastProgress = 0;
-      let startTime = Date.now();
       
       xhr.upload.addEventListener('progress', (event) => {
         if (event.lengthComputable) {
-          const currentTime = Date.now();
-          const elapsedTime = currentTime - startTime;
-          const rawProgress = (event.loaded / event.total) * 100;
+          const progress = calculateUploadProgress(event.loaded, event.total);
+          setUploadProgress(progress);
+          uploadedBytesRef.current = event.loaded;
           
-          const smoothProgress = Math.min(
-            lastProgress + (elapsedTime / 5000) * (rawProgress - lastProgress),
-            rawProgress
-          );
-          
-          const displayProgress = Number(smoothProgress.toFixed(2));
-          
-          setUploadProgress(displayProgress);
-          lastProgress = displayProgress;
-
-          if (displayProgress >= 100) {
+          if (progress >= 99.9) {
             setShowEmailInput(true);
           }
         }
@@ -202,6 +239,7 @@ const VideoCompressor = () => {
         if (xhr.readyState === 4) {
           if (xhr.status >= 200 && xhr.status < 300) {
             setUploadProgress(100);
+            setShowEmailInput(true);
           } else {
             setIsUploading(false);
             setError('Upload failed. Please try again.');
@@ -246,13 +284,13 @@ const VideoCompressor = () => {
 
       const responseData = await response.json();
       const storedVideo = storeVideo(responseData);
-
-      if (useEmail) {
+      
+      if (useEmail && email) {
         navigate('/processing-email', { 
           state: { 
             email, 
             videoId: storedVideo.id 
-          } 
+          }
         });
       } else {
         navigate(`/download/${storedVideo.id}`);
@@ -271,6 +309,14 @@ const VideoCompressor = () => {
   const formatFileSize = (bytes: number): string => {
     const mb = bytes / (1024 * 1024);
     return `${mb.toFixed(2)} MB`;
+  };
+
+  const getUploadSpeedMBps = (): number => {
+    const elapsedSeconds = (Date.now() - uploadStartTimeRef.current) / 1000;
+    if (elapsedSeconds <= 0) return 0;
+    
+    const uploadedMB = uploadedBytesRef.current / (1024 * 1024);
+    return Number((uploadedMB / elapsedSeconds).toFixed(2));
   };
 
   return (
@@ -392,7 +438,13 @@ const VideoCompressor = () => {
                 {isUploading ? (
                   <>
                     <RefreshCw className="animate-spin -ml-1 mr-3 h-5 w-5" />
-                    Uploading {uploadProgress.toFixed(2)}%
+                    <span className="flex flex-col items-start">
+                      <span>Uploading {uploadProgress.toFixed(2)}%</span>
+                      <span className="text-sm opacity-75">
+                        {formatFileSize(uploadedBytesRef.current)} of {formatFileSize(totalBytesRef.current)} 
+                        ({getUploadSpeedMBps()} MB/s)
+                      </span>
+                    </span>
                   </>
                 ) : (
                   'Upload Video'
@@ -428,10 +480,10 @@ const VideoCompressor = () => {
                   <button
                     onClick={() => processVideo(true)}
                     className="flex-1 flex justify-center items-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                    disabled={!email.includes('@')}
+                    disabled={email && !email.includes('@')}
                   >
                     <Mail className="mr-2 h-4 w-4" />
-                    Notify Me
+                    {email ? 'Notify Me' : 'Skip Email'}
                   </button>
                   <button
                     onClick={() => processVideo(false)}
@@ -456,9 +508,13 @@ const VideoCompressor = () => {
                         <Clock className="w-4 h-4 mr-1" />
                         <span>
                           {video.status === 'processing' ? (
-                            video.email ? 
-                              `Processing - Will notify ${video.email}` :
-                              'Processing...'
+                            <>
+                              <RefreshCw className="w-4 h-4 text-blue-400 animate-spin inline mr-1" />
+                              Processing
+                              {video.email && ` - Will notify ${video.email}`}
+                            </>
+                          ) : video.status === 'expired' ? (
+                            'Expired'
                           ) : (
                             `Expires: ${new Date(video.expiresAt).toLocaleDateString()}`
                           )}
@@ -467,14 +523,23 @@ const VideoCompressor = () => {
                     </div>
                     <div className="flex space-x-2">
                       {video.status === 'processing' ? (
-                        <RefreshCw className="w-5 h-5 text-blue-400 animate-spin" />
-                      ) : (
+                        <Link
+                          to={`/download/${video.id}`}
+                          className="p-2 bg-blue-600/50 text-white rounded-md hover:bg-blue-700/50"
+                        >
+                          <RefreshCw className="w-5 h-5 animate-spin" />
+                        </Link>
+                      ) : video.status === 'completed' ? (
                         <Link
                           to={`/download/${video.id}`}
                           className="p-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
                         >
                           <Share2 className="w-5 h-5" />
                         </Link>
+                      ) : (
+                        <span className="p-2 bg-gray-600/50 text-gray-400 rounded-md cursor-not-allowed">
+                          <AlertCircle className="w-5 h-5" />
+                        </span>
                       )}
                     </div>
                   </div>
@@ -485,6 +550,10 @@ const VideoCompressor = () => {
         </div>
       </div>
     </>
+  );
+};
+
+export default VideoCompressor;
   );
 };
 
